@@ -17,7 +17,7 @@ Hauteur, Largeur = 1000, 2000
 Taille_memoire = 200
 nbr_oiseaux = ti.field(dtype=ti.i32, shape=())
 
-# Définition des champs de positions et de vitesses et de couleur des oiseaux
+# Définition des champs de positions et de vitesses et de couleur des oiseaux∏
 position = ti.Vector.field(2, dtype=ti.f32, shape=nbr_oiseaux[None])
 vitesse = ti.Vector.field(2, dtype=ti.f32, shape=nbr_oiseaux[None])
 couleur = ti.Vector.field(3, dtype=ti.f32, shape=nbr_oiseaux[None])
