@@ -2,7 +2,7 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-n = 1000
+n = 500
 pixels = ti.field(dtype=float, shape=(n * 2, n))
 
 
@@ -24,8 +24,10 @@ def paint(t: float):
 
 
 gui = ti.GUI("Julia Set", res=(n * 2, n))
+param = gui.slider("param",0,100,step =1)
+param.value = 0
 
-for i in range(1000000):
-    paint(i * 0.03)
+while gui.running:
+    paint(param.value * 0.03)
     gui.set_image(pixels)
     gui.show()
