@@ -2,10 +2,11 @@ import taichi as ti
 
 ti.init(arch=ti.metal)
 
+Nmax= 5000
 Nboids = ti.field(dtype=ti.i32, shape=())
 Nboids[None] = 1000
 Nflocks = ti.field(dtype=ti.i32, shape=())
-Nflocks[None] = 2
+Nflocks[None] = 3
 
 palette = [
     0xE63946,  # rouge framboise
@@ -22,13 +23,14 @@ palette = [
 
 grid_size = ti.Vector.field(2, dtype=ti.i32, shape=())
 
-positions = ti.Vector.field(2, dtype=ti.f32, shape=Nboids[None])
-velocities = ti.Vector.field(2, dtype=ti.f32, shape=Nboids[None])
-flock = ti.field(dtype=ti.i32, shape=Nboids[None])
+positions = ti.Vector.field(2, dtype=ti.f32, shape=Nmax)
+velocities = ti.Vector.field(2, dtype=ti.f32, shape=Nmax)
+noise_vector = ti.Vector.field(2, dtype=ti.f32, shape=Nmax)
+flock = ti.field(dtype=ti.i32, shape=Nmax)
 
 
 # Parameters
-Longueur = 1200
+Longueur = 1400
 Largeur = 800
 # Hauteur = 100
 
@@ -65,7 +67,7 @@ def init_boids():
     """
     Initialize boids with random positions and velocities.
     """
-    for i in range(Nboids[None]):
+    for i in range(Nmax):
         positions[i] = ti.Vector([ti.random()*Longueur, ti.random()*Largeur])
         velocities[i] = ti.Vector([(ti.random()*2 - 1) * Vmax[None], (ti.random()*2 - 1) * Vmax[None]])
         flock[i] = int(ti.random() * Nflocks[None])
@@ -107,51 +109,59 @@ def grid():
 
 
 @ti.func
-def force_cohesion(i : int) -> ti.Vector:
-    """
-    Calculate the cohesion force for boid i.
-    """
+def compute_all_forces(i: int) -> ti.Vector:
     pos_mean = ti.Vector([0.0, 0.0])
-    count = 0
-    force = ti.Vector([0.0, 0.0])
-    for j in range(Nboids[None]):
-        if i != j and (positions[i] - positions[j]).norm() < cohesion_radius[None] and vision(i, j) and flock[i] == flock[j]:
-            pos_mean += positions[j]
-            count += 1
-    if count > 0:
-        pos_mean /= count
-        force = (pos_mean - positions[i]) * cohesion_strength[None]
-    
-    return force
-
-@ti.func
-def force_alignment(i : int) -> ti.Vector:
-    """
-    Calculate the alignment force for boid i.
-    """
     vel_mean = ti.Vector([0.0, 0.0])
-    count = 0
-    force = ti.Vector([0.0, 0.0])
+    repulsion = ti.Vector([0.0, 0.0])
+    count_cohesion = 0
+    count_alignment = 0
+
     for j in range(Nboids[None]):
-        if i != j and (positions[i] - positions[j]).norm() < alignment_radius[None] and vision(i, j) and flock[i] == flock[j]:
+        if i == j:
+            continue
+
+        offset = positions[j] - positions[i]
+        dist2 = offset.norm_sqr()
+        in_vision = vision(i, j)
+
+        # Repulsion (indépendante du flock)
+        if dist2 < repulsion_radius[None] * repulsion_radius[None] and in_vision:
+            repulsion += offset / dist2
+
+        # Cohésion & alignement : seulement si même flock
+        if flock[i] != flock[j]:
+            continue
+
+        if dist2 < cohesion_radius[None] * cohesion_radius[None] and in_vision:
+            pos_mean += positions[j]
+            count_cohesion += 1
+
+        if dist2 < alignment_radius[None] * alignment_radius[None] and in_vision:
             vel_mean += velocities[j]
-            count += 1
-    if count > 0:
-        vel_mean /= count
-        force = (vel_mean - velocities[i]) * alignment_strength[None]
-    
+            count_alignment += 1
+
+    force = ti.Vector([0.0, 0.0])
+
+    if count_cohesion > 0:
+        pos_mean /= count_cohesion
+        force += (pos_mean - positions[i]) * cohesion_strength[None]
+
+    if count_alignment > 0:
+        vel_mean /= count_alignment
+        force += (vel_mean - velocities[i]) * alignment_strength[None]
+
+    force += -repulsion * repulsion_strength[None]
+
     return force
 
-@ti.func
-def force_repulsion(i : int) -> ti.Vector:
-    """
-    Calculate the repulsion force for boid i.
-    """
-    force = ti.Vector([0.0, 0.0])
-    for j in range(Nboids[None]):
-        if i != j and (positions[i] - positions[j]).norm() < repulsion_radius[None] and vision(i, j):
-            force += (positions[i] - positions[j]) / (positions[i] - positions[j]).norm_sqr()
-    return force * repulsion_strength[None]
+@ti.kernel
+def generate_noise():
+    for i in range(Nboids[None]):
+        noise_vector[i] = ti.Vector([
+            (ti.random() * 2 - 1) * noise_max,
+            (ti.random() * 2 - 1) * noise_max
+        ])
+
 
 @ti.func
 def vision(i : int, j : int) -> bool:
@@ -179,24 +189,59 @@ def accelerate(dt : float):
     """
     Update the velocities of the boids based on their interactions.
     """
+
+    #compute the forces for each boid
     for i in range(Nboids[None]):
-        # gravity force
-        velocities[i] += (gravity[None]) * dt
-
-        # Cohesion force
-        velocities[i] += force_cohesion(i)
-
-        # Alignment force
-        velocities[i] += force_alignment(i)
-
-        # Repulsion force
-        velocities[i] += force_repulsion(i)
-
-        # noise
-        velocities[i] += noise[None]*ti.Vector([(ti.random()*2 - 1) * noise_max, (ti.random()*2 - 1) * noise_max]) * dt
         
+    #     pos_mean = ti.Vector([0.0, 0.0])
+    #     vel_mean = ti.Vector([0.0, 0.0])
+    #     repulsion = ti.Vector([0.0, 0.0])
+    #     count_cohesion = 0
+    #     count_alignment = 0
 
+    #     for j in range(Nboids[None]):
+    #         if i == j:
+    #             continue
 
+    #         offset = positions[j] - positions[i]
+    #         dist2 = offset.norm_sqr()
+    #         in_vision = vision(i, j)
+
+    #         # Repulsion (indépendante du flock)
+    #         if dist2 < repulsion_radius[None] * repulsion_radius[None] and in_vision:
+    #             repulsion += offset / dist2
+
+    #         # Cohésion & alignement : seulement si même flock
+    #         if flock[i] != flock[j]:
+    #             continue
+
+    #         if dist2 < cohesion_radius[None] * cohesion_radius[None] and in_vision:
+    #             pos_mean += positions[j]
+    #             count_cohesion += 1
+
+    #         if dist2 < alignment_radius[None] * alignment_radius[None] and in_vision:
+    #             vel_mean += velocities[j]
+    #             count_alignment += 1
+
+    #     force = ti.Vector([0.0, 0.0])
+
+    #     if count_cohesion > 0:
+    #         pos_mean /= count_cohesion
+    #         force += (pos_mean - positions[i]) * cohesion_strength[None]
+
+    #     if count_alignment > 0:
+    #         vel_mean /= count_alignment
+    #         force += (vel_mean - velocities[i]) * alignment_strength[None]
+
+    #     force += -repulsion * repulsion_strength[None]
+        
+        # Apply the forces to the boid
+        force = compute_all_forces(i)
+
+        velocities[i] += gravity[None] * dt
+        velocities[i] += force * dt
+        velocities[i] += noise[None] * noise_vector[i] * dt
+        
         # Limit the speed to Vmax
         speed = velocities[i].norm()
         if speed > Vmax[None]:
@@ -209,10 +254,13 @@ def main() :
     init_boids()
     dt=0.05
 
+    Nboids_slider = gui.slider('Number of Boids', 100, Nmax, step=1)
+    Nboids_slider.value = Nboids[None]
+
     gravity_slider = gui.slider('Gravity', -10, 10, step=0.1)
     gravity_slider.value = 0
 
-    noise_slider = gui.slider('Noise', 0, 20, step=0.1)
+    noise_slider = gui.slider('Noise', 0, 10, step=0.1)
     noise_slider.value = 10
 
     Vmax_slider = gui.slider('Max Speed', 0, 100, step=1)
@@ -224,22 +272,34 @@ def main() :
     cohesion_radius_slider = gui.slider('Cohesion Radius', 0, 100, step=1)
     cohesion_radius_slider.value = 30
 
-    cohesion_strength_slider = gui.slider('Cohesion Strength', 0, 1, step=0.01)
+    cohesion_strength_slider = gui.slider('Cohesion Strength', 0, 100, step=1)
     cohesion_strength_slider.value = 0.05
 
     alignment_radius_slider = gui.slider('Alignment Radius', 0, 100, step=1)
     alignment_radius_slider.value = 15
 
-    alignment_strength_slider = gui.slider('Alignment Strength', 0, 1, step=0.01)
+    alignment_strength_slider = gui.slider('Alignment Strength', 0, 100, step=1)
     alignment_strength_slider.value = 0.1
 
     repulsion_radius_slider = gui.slider('Repulsion Radius', 0, 100, step=1)
     repulsion_radius_slider.value = 10
 
-    repulsion_strength_slider = gui.slider('Repulsion Strength', 0, 20, step=0.01)
+    repulsion_strength_slider = gui.slider('Repulsion Strength', 0, 5000, step=1)
     repulsion_strength_slider.value = 10
 
+
+    paused = False
+
     while gui.running:
+        # Handle events
+        for e in gui.get_events():
+            if e.key == ti.GUI.ESCAPE:
+                gui.running = False  
+            elif e.key == ti.GUI.SPACE and e.type == ti.GUI.PRESS:
+                paused = not paused  
+
+
+        # Updtae the parameters from the sliders
         gravity[None][1] = gravity_slider.value
         noise[None] = noise_slider.value
         cohesion_radius[None] = cohesion_radius_slider.value
@@ -250,16 +310,22 @@ def main() :
         repulsion_strength[None] = repulsion_strength_slider.value
         Vmax[None] = Vmax_slider.value
         vision_angle[None] = vision_angle_slider.value
+        Nboids[None] = int(Nboids_slider.value)
 
 
-        update(dt)
-        accelerate(dt)
-        bordure()
-        normalized_positions = positions.to_numpy().copy()
+        if not paused:
+            update(dt)
+            generate_noise()
+            accelerate(dt)
+            bordure()
+
+        n = Nboids[None]  # Nombre actuel de boids
+
+        normalized_positions = positions.to_numpy()[:n].copy()
         normalized_positions[:, 0] /= Longueur
         normalized_positions[:, 1] /= Largeur
 
-        gui.circles(normalized_positions, radius=4, palette=palette, palette_indices=flock.to_numpy())
+        gui.circles(normalized_positions, radius=2, palette=palette, palette_indices=flock.to_numpy()[:n])
         gui.show()
 
 if __name__ == "__main__":
